@@ -101,7 +101,6 @@ finally/
 ├── db/                       # Volume mount target (SQLite file lives here at runtime)
 │   └── .gitkeep              # Directory exists in repo; finally.db is gitignored
 ├── Dockerfile                # Multi-stage build (Node → Python)
-├── docker-compose.yml        # Optional convenience wrapper
 ├── .env                      # Environment variables (gitignored, .env.example committed)
 └── .gitignore
 ```
@@ -130,6 +129,14 @@ MASSIVE_API_KEY=
 
 # Optional: Set to "true" for deterministic mock LLM responses (testing)
 LLM_MOCK=false
+
+# Optional: number of recent chat messages loaded as LLM context (default: 10)
+CHAT_HISTORY_LIMIT=10
+
+# Optional: Massive API poll interval in seconds (default: 15, matching the
+# free tier's 5 calls/min limit). Does not affect the simulator or SSE cadence,
+# which are fixed at ~500ms.
+PRICE_POLL_INTERVAL_SECONDS=15
 ```
 
 ### Behavior
@@ -137,6 +144,8 @@ LLM_MOCK=false
 - If `MASSIVE_API_KEY` is set and non-empty → backend uses Massive REST API for market data
 - If `MASSIVE_API_KEY` is absent or empty → backend uses the built-in market simulator
 - If `LLM_MOCK=true` → backend returns deterministic mock LLM responses (for E2E tests)
+- `CHAT_HISTORY_LIMIT` controls how many recent `chat_messages` rows are loaded as LLM context (default 10)
+- `PRICE_POLL_INTERVAL_SECONDS` controls how often the Massive poller is called (default 15s); it has no effect on the simulator or the SSE push cadence, both fixed at ~500ms
 - The backend reads `.env` from the project root (mounted into the container or read via docker `--env-file`)
 
 ---
@@ -147,6 +156,8 @@ LLM_MOCK=false
 
 Both the simulator and the Massive client implement the same abstract interface. The backend selects which to use based on the environment variable. All downstream code (SSE streaming, price cache, frontend) is agnostic to the source.
 
+The supported ticker universe depends on the active source: in simulator mode, the watchlist is restricted to the fixed list of 10 default tickers (no new tickers can be added); in Massive mode, any ticker supported by the Massive API can be added. `POST /api/watchlist` and AI-driven `watchlist_changes` both validate against this constraint and reject unsupported tickers.
+
 ### Simulator (Default)
 
 - Generates prices using geometric Brownian motion (GBM) with configurable drift and volatility per ticker
@@ -154,14 +165,14 @@ Both the simulator and the Massive client implement the same abstract interface.
 - Correlated moves across tickers (e.g., tech stocks move together)
 - Occasional random "events" — sudden 2-5% moves on a ticker for drama
 - Starts from realistic seed prices (e.g., AAPL ~$190, GOOGL ~$175, etc.)
+- Fixed ticker universe: only the default 10 seed tickers are supported; tickers outside this list cannot be added to the watchlist while running in simulator mode
 - Runs as an in-process background task — no external dependencies
 
 ### Massive API (Optional)
 
 - REST API polling (not WebSocket) — simpler, works on all tiers
-- Polls for the union of all watched tickers on a configurable interval
-- Free tier (5 calls/min): poll every 15 seconds
-- Paid tiers: poll every 2-15 seconds depending on tier
+- Polls for the union of all watched tickers at the `PRICE_POLL_INTERVAL_SECONDS` cadence (default 15s, matching the free tier's 5 calls/min limit). On paid tiers, lower the env var (down to ~2s depending on tier) to poll faster — this only affects the Massive poll rate, not the simulator or SSE cadence
+- Any ticker supported by Massive can be added to the watchlist
 - Parses REST response into the same format as the simulator
 
 ### Shared Price Cache
@@ -175,7 +186,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
-- Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist
+- Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist. In Massive mode, the cache only changes value as often as the poller updates it (§6 "Massive API"), so the same price may be re-sent across several SSE ticks between polls
 - Each SSE event contains ticker, price, previous price, timestamp, and change direction
 - Client handles reconnection automatically (EventSource has built-in retry)
 
@@ -198,6 +209,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 **users_profile** — User state (cash balance)
 - `id` TEXT PRIMARY KEY (default: `"default"`)
 - `cash_balance` REAL (default: `10000.0`)
+- `realized_pnl` REAL (default: `0.0`) — cumulative realized gains/losses from sells, updated on each sell
 - `created_at` TEXT (ISO timestamp)
 
 **watchlist** — Tickers the user is watching
@@ -215,6 +227,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `avg_cost` REAL
 - `updated_at` TEXT (ISO timestamp)
 - UNIQUE constraint on `(user_id, ticker)`
+- Row is deleted when a sell brings `quantity` to zero (no zero-quantity rows persist)
 
 **trades** — Trade history (append-only log)
 - `id` TEXT PRIMARY KEY (UUID)
@@ -256,16 +269,16 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 ### Portfolio
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/portfolio` | Current positions, cash balance, total value, unrealized P&L |
-| POST | `/api/portfolio/trade` | Execute a trade: `{ticker, quantity, side}` |
+| GET | `/api/portfolio` | Current positions, cash balance, total value, unrealized P&L, cumulative realized P&L |
+| POST | `/api/portfolio/trade` | Execute a trade: `{ticker, quantity, side}`. Rejected if the ticker is not on the watchlist |
 | GET | `/api/portfolio/history` | Portfolio value snapshots over time (for P&L chart) |
 
 ### Watchlist
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/watchlist` | Current watchlist tickers with latest prices |
-| POST | `/api/watchlist` | Add a ticker: `{ticker}` |
-| DELETE | `/api/watchlist/{ticker}` | Remove a ticker |
+| POST | `/api/watchlist` | Add a ticker: `{ticker}`. Rejected if unsupported by the active market data source (simulator: must be one of the default 10; Massive: must be a ticker Massive supports) |
+| DELETE | `/api/watchlist/{ticker}` | Remove a ticker. Rejected if the user holds an open position in that ticker |
 
 ### Chat
 | Method | Path | Description |
@@ -294,7 +307,7 @@ When the user sends a chat message, the backend:
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
 4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the cerebras-inference skill
 5. Parses the complete structured JSON response
-6. Auto-executes any trades or watchlist changes specified in the response
+6. Auto-executes `watchlist_changes` first, then `trades`, so a newly added ticker has a price available before any same-turn trade on it executes. Each action is validated the same way as its manual API counterpart (ticker support, watchlist membership, sufficient cash/shares) and rejected individually on failure
 7. Stores the message and executed actions in `chat_messages`
 8. Returns the complete JSON response to the frontend (no token-by-token streaming — Cerebras inference is fast enough that a loading indicator is sufficient)
 
@@ -316,7 +329,7 @@ The LLM is instructed to respond with JSON matching this schema:
 
 - `message` (required): The conversational text shown to the user
 - `trades` (optional): Array of trades to auto-execute. Each trade goes through the same validation as manual trades (sufficient cash for buys, sufficient shares for sells)
-- `watchlist_changes` (optional): Array of watchlist modifications
+- `watchlist_changes` (optional): Array of watchlist modifications. Applied before `trades` in the same response (see §9 "How It Works", step 6). A ticker unsupported by the active market data source (e.g., not one of the default 10 in simulator mode) is rejected, and the failure is reported in the response so the LLM can inform the user
 
 ### Auto-Execution
 
@@ -359,7 +372,7 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
 - **Trade bar** — simple input area: ticker field, quantity field, buy button, sell button. Market orders, instant fill.
 - **AI chat panel** — docked/collapsible sidebar. Message input, scrolling conversation history, loading indicator while waiting for LLM response. Trade executions and watchlist changes shown inline as confirmations.
-- **Header** — portfolio total value (updating live), connection status indicator, cash balance
+- **Header** — portfolio total value (updating live), connection status indicator, cash balance, cumulative realized P&L
 
 ### Technical Notes
 
@@ -429,9 +442,9 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 
 **Backend (pytest)**:
 - Market data: simulator generates valid prices, GBM math is correct, Massive API response parsing works, both implementations conform to the abstract interface
-- Portfolio: trade execution logic, P&L calculations, edge cases (selling more than owned, buying with insufficient cash, selling at a loss)
-- LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow
-- API routes: correct status codes, response shapes, error handling
+- Portfolio: trade execution logic, unrealized and realized P&L calculations, edge cases (selling more than owned, buying with insufficient cash, selling at a loss, position row deleted when quantity reaches zero, trade rejected for a ticker not on the watchlist)
+- LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow, watchlist-then-trade execution ordering
+- API routes: correct status codes, response shapes, error handling, including watchlist add rejected for unsupported tickers and watchlist removal rejected when an open position exists
 
 **Frontend (React Testing Library or similar)**:
 - Component rendering with mock data
@@ -448,32 +461,9 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 
 **Key Scenarios**:
 - Fresh start: default watchlist appears, $10k balance shown, prices are streaming
-- Add and remove a ticker from the watchlist
+- Add and remove a ticker from the watchlist; removal is rejected if an open position exists
 - Buy shares: cash decreases, position appears, portfolio updates
 - Sell shares: cash increases, position updates or disappears
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
-
----
-
-## 13. Open Questions, Clarifications & Simplification Opportunities
-
-*Added by doc review — not yet resolved by the project owner.*
-
-### Open Questions
-
-1. **Unknown tickers added via chat or watchlist (§6, §9).** The structured-output example shows the AI adding `"PYPL"` to the watchlist, but §6 only describes seed prices for the default 10 tickers. If a user (or the AI) adds an arbitrary ticker, where does its starting price/volatility come from? Does the simulator support an open universe of tickers, or is the watchlist restricted to a fixed list? ANSWER: In simulator mode, adding new tickers which are not in the default 10 is not supported. When not in simulator mode, using Massive API, any ticker is supported that is available there.
-2. **Removing a watchlisted ticker you hold a position in (§7, §8).** `DELETE /api/watchlist/{ticker}` isn't described as checking for an open position. If removed, the price cache (§6) stops tracking that ticker — how is unrealized P&L / current price computed for a position whose ticker is no longer watched? ANSWER: Deleting ticker should be rejected if there is an open position.
-3. **Trading tickers outside the watchlist (§8).** Is `POST /api/portfolio/trade` restricted to tickers currently in the watchlist (i.e., tickers with a known live price), or can any ticker symbol be traded? ANSWER: Only the tickers that are on the user's watchlist can be traded.
-4. **Same-turn watchlist add + trade ordering (§9).** When the AI's response contains both a `watchlist_changes` add and a `trades` entry for the same new ticker, is there a guaranteed execution order (add before trade) so a price exists at execution time? ANSWER: Add before trade.
-5. **Realized P&L (§7, §10).** The schema tracks `avg_cost` and the trade log, but no field surfaces realized P&L (gains/losses from shares already sold). Is realized P&L intentionally out of scope, or should it be derived and displayed somewhere (positions table, chat context)? ANSWER: The realized gains and losses should be displayed separately.
-6. **Zero-quantity positions (§7).** After a full sell, is the `positions` row deleted, or kept at `quantity = 0`? This affects how the positions table and heatmap should filter rows. ANSWER: The positions row is deleted in case of full sell.
-7. **Conversation history window (§9, step 2).** "Loads recent conversation history" doesn't say how many messages/turns. Worth pinning a number (or token budget) since it affects LLM cost and context relevance. ANSWER: Maximum last 10 messages, make it configurable somewhere.
-8. **`docker-compose.yml` purpose (§4 vs §3 rationale table).** The rationale table justifies the single-container design partly by "no docker-compose for production, no service orchestration," yet §4 lists a root `docker-compose.yml` as an "optional convenience wrapper" with no further description in §11. Worth clarifying its intended use (e.g., local dev only) so it doesn't read as a contradiction — or dropping it if the start/stop scripts already cover that need. ANSWER: you can drop it, if start/stop scripts already covering that need.
-9. **Massive API cadence vs. SSE cadence (§6).** SSE pushes at ~500ms regardless of source, but the Massive free tier only polls every 15s. Is the same (unchanged) price simply re-sent every 500ms between polls, or is there client/server-side interpolation? Worth stating explicitly so the Frontend/Market Data agents agree. ANSWER: Use same polling frequency for both, every 15s.
-
-### Simplification Opportunities
-
-- **§9 chat_messages.actions vs. trades/watchlist tables**: `actions` stores a JSON snapshot of executed actions, which duplicates data already recoverable by joining `trades`/`watchlist` on `created_at`. This denormalization is reasonable for fast chat-history rendering without joins, but call it out as a deliberate tradeoff rather than an oversight.
-- **§6 "Two Implementations, One Interface"**: Since Massive API is optional and off by default, consider explicitly marking it as a stretch goal (like the Terraform/App Runner deployment in §11) so agents prioritize the simulator path first and don't block core work on Massive client correctness.

@@ -454,3 +454,28 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
+
+---
+
+## 13. Open Questions, Clarifications & Simplification Opportunities
+
+*Added by doc review — not yet resolved by the project owner.*
+
+### Open Questions
+
+1. **Unknown tickers added via chat or watchlist (§6, §9).** The structured-output example shows the AI adding `"PYPL"` to the watchlist, but §6 only describes seed prices for the default 10 tickers. If a user (or the AI) adds an arbitrary ticker, where does its starting price/volatility come from? Does the simulator support an open universe of tickers, or is the watchlist restricted to a fixed list?
+2. **Removing a watchlisted ticker you hold a position in (§7, §8).** `DELETE /api/watchlist/{ticker}` isn't described as checking for an open position. If removed, the price cache (§6) stops tracking that ticker — how is unrealized P&L / current price computed for a position whose ticker is no longer watched?
+3. **Trading tickers outside the watchlist (§8).** Is `POST /api/portfolio/trade` restricted to tickers currently in the watchlist (i.e., tickers with a known live price), or can any ticker symbol be traded?
+4. **Same-turn watchlist add + trade ordering (§9).** When the AI's response contains both a `watchlist_changes` add and a `trades` entry for the same new ticker, is there a guaranteed execution order (add before trade) so a price exists at execution time?
+5. **Realized P&L (§7, §10).** The schema tracks `avg_cost` and the trade log, but no field surfaces realized P&L (gains/losses from shares already sold). Is realized P&L intentionally out of scope, or should it be derived and displayed somewhere (positions table, chat context)?
+6. **Zero-quantity positions (§7).** After a full sell, is the `positions` row deleted, or kept at `quantity = 0`? This affects how the positions table and heatmap should filter rows.
+7. **Conversation history window (§9, step 2).** "Loads recent conversation history" doesn't say how many messages/turns. Worth pinning a number (or token budget) since it affects LLM cost and context relevance.
+8. **`docker-compose.yml` purpose (§4 vs §3 rationale table).** The rationale table justifies the single-container design partly by "no docker-compose for production, no service orchestration," yet §4 lists a root `docker-compose.yml` as an "optional convenience wrapper" with no further description in §11. Worth clarifying its intended use (e.g., local dev only) so it doesn't read as a contradiction — or dropping it if the start/stop scripts already cover that need.
+9. **Massive API cadence vs. SSE cadence (§6).** SSE pushes at ~500ms regardless of source, but the Massive free tier only polls every 15s. Is the same (unchanged) price simply re-sent every 500ms between polls, or is there client/server-side interpolation? Worth stating explicitly so the Frontend/Market Data agents agree.
+10. **gpt-oss-120b model id (§9).** Worth double-checking the exact OpenRouter/Cerebras model identifier against the cerebras-inference skill at implementation time, since model slugs occasionally change.
+
+### Simplification Opportunities
+
+- **§9 chat_messages.actions vs. trades/watchlist tables**: `actions` stores a JSON snapshot of executed actions, which duplicates data already recoverable by joining `trades`/`watchlist` on `created_at`. This denormalization is reasonable for fast chat-history rendering without joins, but call it out as a deliberate tradeoff rather than an oversight.
+- **§6 "Two Implementations, One Interface"**: Since Massive API is optional and off by default, consider explicitly marking it as a stretch goal (like the Terraform/App Runner deployment in §11) so agents prioritize the simulator path first and don't block core work on Massive client correctness.
+- **§4 directory structure**: `docker-compose.yml` and `.env` are both listed at the root with no owning agent — if `docker-compose.yml` is dev-only, consider moving it under a `dev/` or documenting it alongside the scripts in §11 so its scope is unambiguous.

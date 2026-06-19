@@ -1,5 +1,5 @@
 ---
-name: reviewer
+name: codex-reviewer
 description: Carry out a comprehensive review when requested using codex
 ---
 

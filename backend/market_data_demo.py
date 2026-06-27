@@ -50,15 +50,18 @@ def colour_pct(pct: float) -> str:
     return (GREEN if pct > 0 else RED if pct < 0 else "") + s + RESET
 
 
-def mini_sparkline(history: list[float], width: int = 8) -> str:
-    """Return an 8-character ASCII sparkline from the last `width` prices."""
+SPARK_WIDTH = 36
+
+
+def mini_sparkline(history: list[float], width: int = SPARK_WIDTH) -> str:
     bars = " ▁▂▃▄▅▆▇█"
     segment = history[-width:] if len(history) >= width else history
     if len(segment) < 2:
         return "." * width
     lo, hi = min(segment), max(segment)
     span = hi - lo or 1
-    return "".join(bars[round((p - lo) / span * (len(bars) - 1))] for p in segment)
+    chars = "".join(bars[round((p - lo) / span * (len(bars) - 1))] for p in segment)
+    return chars.ljust(width)
 
 
 async def main() -> None:
@@ -90,8 +93,8 @@ async def main() -> None:
                 f"({elapsed:.1f}s elapsed, {remaining:.0f}s remaining, "
                 f"tick #{ticks})",
                 "",
-                f"  {'TICKER':<6}  {'PRICE':>9}  {'DIR'}  {'CHG %':>8}  {'SPARKLINE (500ms ticks)'}",
-                f"  {'-'*6}  {'-'*9}  {'-'*3}  {'-'*8}  {'-'*24}",
+                f"  {'TICKER':<6}  {'PRICE':>9}  {'DIR'}  {'CHG %':>8}  {'SPARKLINE (500ms ticks)':<{SPARK_WIDTH}}",
+                f"  {'-'*6}  {'-'*9}  {'-'*3}  {'-'*8}  {'-'*SPARK_WIDTH}",
             ]
 
             for ticker in SEED_PRICES:           # stable ordering

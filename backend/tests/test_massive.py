@@ -99,27 +99,30 @@ async def test_fetch_and_update_direction_tracks_consecutive_polls():
     assert point.direction == "up"
 
 
-def test_is_ticker_supported_true_on_ok_status():
+@pytest.mark.asyncio
+async def test_is_ticker_supported_true_on_ok_status():
     mkt = MassiveMarketData(api_key="key")
     response = make_response(json_data={"status": "OK"})
 
     with patch("market.massive.requests.get", return_value=response):
-        assert mkt.is_ticker_supported("AAPL") is True
+        assert await mkt.is_ticker_supported("AAPL") is True
 
 
-def test_is_ticker_supported_false_on_404():
+@pytest.mark.asyncio
+async def test_is_ticker_supported_false_on_404():
     mkt = MassiveMarketData(api_key="key")
     response = make_response(status_code=404)
 
     with patch("market.massive.requests.get", return_value=response):
-        assert mkt.is_ticker_supported("FAKE") is False
+        assert await mkt.is_ticker_supported("FAKE") is False
 
 
-def test_is_ticker_supported_false_on_exception():
+@pytest.mark.asyncio
+async def test_is_ticker_supported_false_on_exception():
     mkt = MassiveMarketData(api_key="key")
 
     with patch("market.massive.requests.get", side_effect=Exception("network error")):
-        assert mkt.is_ticker_supported("AAPL") is False
+        assert await mkt.is_ticker_supported("AAPL") is False
 
 
 def test_register_and_unregister_ticker():
@@ -195,9 +198,32 @@ async def test_poll_loop_continues_after_exception():
 async def test_start_and_stop_lifecycle():
     mkt = MassiveMarketData(api_key="key", poll_interval=10.0)
 
-    with patch.object(mkt, "_fetch_and_update", return_value=None):
+    async def noop():
+        pass
+
+    with patch.object(mkt, "_fetch_and_update", side_effect=noop):
         await mkt.start()
         assert mkt._task is not None
         await mkt.stop()
 
     assert mkt._task.cancelled() or mkt._task.done()
+
+
+@pytest.mark.asyncio
+async def test_start_does_initial_fetch_before_background_loop():
+    """start() must populate the cache immediately so SSE clients connecting
+    right after startup receive data, not an empty stream."""
+    mkt = MassiveMarketData(api_key="key", poll_interval=60.0)
+    mkt.register_ticker("AAPL")
+
+    snapshot_response = make_response(
+        json_data={"status": "OK", "tickers": [make_snapshot()]}
+    )
+
+    with patch("market.massive.requests.get", return_value=snapshot_response):
+        await mkt.start()
+
+    try:
+        assert mkt.get_price("AAPL") is not None
+    finally:
+        await mkt.stop()

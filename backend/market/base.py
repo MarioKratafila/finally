@@ -40,5 +40,5 @@ class MarketDataSource(ABC):
         """Latest cached prices for every known ticker."""
 
     @abstractmethod
-    def is_ticker_supported(self, ticker: str) -> bool:
+    async def is_ticker_supported(self, ticker: str) -> bool:
         """Whether this ticker may be added to the watchlist on this source."""

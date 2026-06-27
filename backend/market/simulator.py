@@ -85,7 +85,7 @@ class SimulatorMarketData(MarketDataSource):
     def get_all_prices(self) -> dict[str, PricePoint]:
         return dict(self._cache._data)
 
-    def is_ticker_supported(self, ticker: str) -> bool:
+    async def is_ticker_supported(self, ticker: str) -> bool:
         return ticker.upper() in SEED_PRICES
 
     async def _tick_loop(self) -> None:

@@ -40,6 +40,7 @@ class MassiveMarketData(MarketDataSource):
         self._tickers.discard(ticker.upper())
 
     async def start(self) -> None:
+        await self._fetch_and_update()  # populate cache before first SSE client connects
         self._task = asyncio.create_task(self._poll_loop())
         log.info("MassiveMarketData started (interval=%.1fs)", self._poll_interval)
 
@@ -62,8 +63,9 @@ class MassiveMarketData(MarketDataSource):
     def get_all_prices(self) -> dict[str, PricePoint]:
         return dict(self._cache._data)
 
-    def is_ticker_supported(self, ticker: str) -> bool:
-        return self._validate_ticker(ticker.upper())
+    async def is_ticker_supported(self, ticker: str) -> bool:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._validate_ticker, ticker.upper())
 
     def _validate_ticker(self, ticker: str) -> bool:
         try:

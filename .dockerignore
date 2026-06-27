@@ -1,0 +1,18 @@
+# Dependencies and build artifacts (rebuilt inside the image)
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+frontend/.next
+frontend/out
+
+# Runtime data and secrets (never baked into the image)
+db/*.db
+.env
+.env.*
+!.env.example
+
+# Repo metadata not needed at build time
+.git
+.github
+test

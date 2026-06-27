@@ -12,10 +12,10 @@ Runs the GBM simulator for 10 seconds and prints a refreshing price table
 to the terminal showing prices, tick direction, and daily % change.
 
 Usage (recommended — uv installs numpy automatically):
-    uv run market_data_demo.py
+    uv run backend/market_data_demo.py
 
 Or with numpy already installed:
-    python3 market_data_demo.py
+    python3 backend/market_data_demo.py
 """
 
 import asyncio
@@ -23,8 +23,8 @@ import os
 import sys
 import time
 
-# Make the backend market package importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
+# Make the market package importable (it lives alongside this script in backend/)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from market.simulator import SEED_PRICES, SimulatorMarketData  # noqa: E402
 

@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #   "numpy>=1.26",
+#   "requests>=2.31",
 # ]
 # ///
 """

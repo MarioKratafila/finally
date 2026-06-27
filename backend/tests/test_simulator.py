@@ -12,15 +12,16 @@ from market.simulator import (
 )
 
 
-def test_is_ticker_supported_exactly_the_ten_seed_tickers():
+@pytest.mark.asyncio
+async def test_is_ticker_supported_exactly_the_ten_seed_tickers():
     sim = SimulatorMarketData()
 
     for ticker in SEED_PRICES:
-        assert sim.is_ticker_supported(ticker) is True
-        assert sim.is_ticker_supported(ticker.lower()) is True
+        assert await sim.is_ticker_supported(ticker) is True
+        assert await sim.is_ticker_supported(ticker.lower()) is True
 
     for ticker in ("PYPL", "FAKE", "BTC", ""):
-        assert sim.is_ticker_supported(ticker) is False
+        assert await sim.is_ticker_supported(ticker) is False
 
 
 def test_gbm_produces_strictly_positive_prices_over_many_ticks():
@@ -111,17 +112,18 @@ def test_correlated_tickers_show_expected_correlation_structure():
     sim = SimulatorMarketData()
     returns: dict[str, list[float]] = {t: [] for t in SEED_PRICES}
 
-    for _ in range(8_000):
-        before = dict(sim._prices)
-        sim._advance_prices()
-        for ticker in SEED_PRICES:
-            returns[ticker].append(math.log(sim._prices[ticker] / before[ticker]))
+    # Suppress random events so the Cholesky-correlated GBM signal is not
+    # swamped by the much-larger uncorrelated event spikes (~300x variance).
+    with patch("market.simulator.random.random", return_value=1.0):
+        for _ in range(8_000):
+            before = dict(sim._prices)
+            sim._advance_prices()
+            for ticker in SEED_PRICES:
+                returns[ticker].append(math.log(sim._prices[ticker] / before[ticker]))
 
     aapl_googl_corr = np.corrcoef(returns["AAPL"], returns["GOOGL"])[0, 1]
     jpm_nflx_corr = np.corrcoef(returns["JPM"], returns["NFLX"])[0, 1]
 
     # AAPL/GOOGL configured at 0.70 correlation; JPM/NFLX at 0.22.
-    # Random-event noise loosens this, so assert the qualitative ordering
-    # and a generous band around the expected high-correlation value.
     assert aapl_googl_corr > 0.5
     assert aapl_googl_corr > jpm_nflx_corr

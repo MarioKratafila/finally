@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "numpy>=1.26",
+# ]
+# ///
 """
 market_data_demo.py — live demonstration of the FinAlly market data backend.
 
 Runs the GBM simulator for 10 seconds and prints a refreshing price table
 to the terminal showing prices, tick direction, and daily % change.
 
-Usage:
-    python3 market_data_demo.py
+Usage (recommended — uv installs numpy automatically):
+    uv run market_data_demo.py
 
-No dependencies beyond what is already in backend/pyproject.toml
-(numpy, and the standard library).
+Or with numpy already installed:
+    python3 market_data_demo.py
 """
 
 import asyncio
